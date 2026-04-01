@@ -1,0 +1,287 @@
+<!DOCTYPE HTML>
+<!--
+	Solid State by HTML5 UP
+	html5up.net | @ajlkn
+	Free for personal and commercial use under the CCA 3.0 license (html5up.net/license)
+-->
+<html>
+
+<head>
+	<link rel="icon" type="image/png" href="favicon.png" />
+	<title>OPC</title>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+	<link rel="stylesheet" href="assets/css/main.css" />
+	<noscript>
+		<link rel="stylesheet" href="assets/css/noscript.css" />
+	</noscript>
+</head>
+
+<body class="is-preload">
+	<section id="wrapper">
+		<!-- Page Wrapper -->
+		<div id="page-wrapper">
+
+			<!-- Header -->
+			<header id="header">
+				<h1><a href="index.html">Portfolio | Simen van Herpt</a></h1>
+			</header>
+
+
+			<!-- Wrapper -->
+			<section id="wrapper">
+				<header>
+					<div class="inner">
+						<h2>Work In Progress</h2>
+						<h2>Optical Proximity Correction (OPC)</h2>
+						<div class="video-container">
+							<iframe width="560" height="315"
+								src="https://www.youtube.com/embed/4LP_2X_Xdus?si=-yXbuYXhfRj-enRj&mute=1"
+								title="YouTube video player" frameborder="0"
+								allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+								allowfullscreen></iframe>
+						</div>
+					</div>
+
+				</header>
+
+				<section id="one" class="wrapper alt style1">
+					<div class="inner">
+						<h2 class="major">Description</h2>
+						<p>
+							Lithography is the process of printing tiny circuit patterns onto silicon wafers. Light
+							travels through a mask at different angles, controlled by the illumination source, onto a
+							light-sensitive surface that records the pattern.
+							The problem is that at the scales modern chips operate at, light bends and interferes with
+							itself, causing patterns to blur, round off and distort by the time they reach the wafer
+							(see this <a href="https://youtu.be/rdlZ8KYVtPU?si=MEmmiYP7l4CAyofj&t=676">video</a>). What
+							you design is never quite what gets printed. Take a simple example, using a desired pattern
+							directly as the mask:
+							<img class="inner" style="padding-top: 24px;" src="images/OPC/example_sim.webp" />
+							Using Fourier optics, we can describe this behaviour precisely. Given a mask and
+							illumination source, the model can predict the resulting intensity pattern and final resist
+							profile on the wafer. The challenge is going the other way: given a desired resist profile,
+							find the mask and illumination that produce it. For a model this complex, that inversion is
+							far from straightforward, and this project tackles it using a neural network and
+							gradient-based optimisation.
+						</p>
+					</div>
+
+
+					<div class="inner">
+						<div class="content">
+							<h2 class="major">Simulating</h2>
+							<p>
+								Using the Fourier optics model, we simulate the full imaging process step by step. The
+								mask is transformed into frequency space, where each frequency represents a spatial
+								detail of the pattern. The illumination source controls which angles of light hit the
+								mask, and for each of those angles a pupil filter removes the finest details that the
+								physical lens doesn't have the resolution to reproduce, similar to how a camera lens
+								with a low aperture produces a blurry image. All these contributions are summed and
+								transformed back to give the intensity pattern that lands on the wafer. Finally, the
+								photoresist, which is the light-sensitive material on the wafer, responds to this
+								intensity with a threshold effect: regions that receive enough light get exposed and
+								regions that don't stay unexposed, giving the final binary result.
+
+							</p>
+							<p>
+								The simulator is accurate but slow, and more importantly not differentiable, meaning we
+								can't use it directly to optimise the mask and illumination through gradient descent.
+								That's where the surrogate model comes in.
+							</p>
+						</div>
+					</div>
+
+					<div class="inner">
+						<div class="content">
+							<h2 class="major">Surrogate Neural Network</h2>
+							<p>
+								We can train a neural network to approximate the simulator by generating mask and
+								illumination pairs and using the Fourier optics model to compute the ground truth wafer
+								intensity and resist profile for each one.
+
+								The architecture is a UNet, a natural choice for image-to-image prediction tasks. It
+								processes the mask through a series of convolutional layers that capture local spatial
+								patterns, compressing it down to a compact representation and then expanding back up to
+								full resolution. Convolutional layers are well suited here since the mask is inherently
+								spatial, and what matters at each pixel depends strongly on its local neighbourhood.
+								Skip connections pass feature maps directly from the encoder to the corresponding
+								decoder layer, giving the network a shortcut to fine spatial detail that would otherwise
+								be lost during compression.
+
+								<img class="inner" style="padding-top: 24px;" src="images/OPC/model.webp" />
+								U
+								The illumination is handled differently. Unlike the mask, the illumination source is a
+								global property of the optical system, affecting how every part of the mask gets
+								resolved on the wafer equally. Feeding it in as just another input channel and
+								processing it with convolutions doesn't reflect that. Instead we use Feature-wise Linear
+								Modulation (FiLM): the illumination is encoded into a compact vector, which is used to
+								dynamically scale and shift the feature maps at each level of the network. It is similar
+								to a standard layer in a neural network, but rather than having fixed learned
+								parameters, the scale and shift values are predicted on the fly from the illumination
+								input, adapting the network's behaviour to each illumination pattern.
+
+								<img class="inner" style="padding-top: 24px;" src="images/OPC/nn_predict.webp" />
+
+								Once trained, gradients can flow through the surrogate, meaning we can use it to work
+								backwards from a desired resist profile to find the mask and illumination that produce
+								it.
+							</p>
+						</div>
+					</div>
+
+					<div class="inner">
+						<div class="content">
+							<h2 class="major">Data Generation</h2>
+							<p>
+								To train the surrogate, we need a large and diverse dataset of mask, illumination and
+								simulated output pairs. We start with a set of 4000 base circuit patterns, but that
+								alone wouldn't give the network enough variety to generalise well. During optimisation,
+								the network will encounter mask and illumination combinations it has never seen before.
+								If those combinations fall outside the training distribution, the network's predictions
+								become unreliable, and the optimiser ends up exploiting these blind spots rather than
+								finding physically meaningful solutions.
+
+								To fix this, we apply a range of augmentations to generate thousands of variations
+								including dilation, erosion, boundary noise, corner rounding and random feature
+								additions, producing masks that could resemble OPC-corrected patterns.
+
+								<img class="inner" style="padding-top: 24px;"
+									src="images/OPC/mask_augmentations.webp" />
+
+								For the illumination, we generate random source patterns by placing Gaussian modes at
+								different positions in frequency space, and blending them with
+								random weights.
+
+								<img class="inner" style="padding-top: 24px;"
+									src="images/OPC/illum_augmentations.webp" />
+
+								Each mask and illumination pair is passed through the simulator to generate ground truth
+								intensity and resist profiles, giving us a dataset of around 50k training samples to
+								start with.
+							</p>
+						</div>
+					</div>
+
+					<div class="inner">
+						<div class="content">
+							<h2 class="major">Gradient-Based Optimisation</h2>
+							<p>
+								With a trained surrogate, we can now optimise the mask and illumination jointly. Because
+								the surrogate is differentiable, we can compute gradients of the resist prediction with
+								respect to both the mask and the illumination, and use those gradients to find
+								adjustments that bring the predicted output closer to the desired pattern.
+								The optimisation starts from the target pattern itself as the initial mask, with a
+								randomly sampled illumination. To avoid getting stuck in poor local minima, we apply a
+								Gaussian blur to the mask that anneals over iterations, starting coarse and gradually
+								sharpening. This lets the optimiser find the right global structure before committing to
+								fine details. A binary phase at the end pushes mask values toward 0 or 1, since real
+								masks are binary.
+								[PLACEHOLDER: final result grid showing target, optimised mask, illumination, NN
+								predicted resist]
+								The surrogate prediction matches the target closely, and the optimised mask and
+								illumination look physically meaningful. However, when we verify the result using the
+								ground truth simulator, a different picture emerges.
+								<img class="inner" style="padding-top: 24px;"
+									src="images/OPC/optimised_results_bad.webp" />
+								The actual printed result differs significantly from what the surrogate predicted. The
+								optimiser found a solution that looks good to the network, but that solution sits
+								outside the region the network was trained on, where its predictions can no longer be
+								trusted.
+							</p>
+						</div>
+					</div>
+
+					<div class="inner">
+						<div class="content">
+							<h2 class="major">Active Learning</h2>
+							<p>
+								The optimiser is very good at finding masks and illuminations that fool the surrogate
+								into predicting a good result. But when we simulate those optimised inputs with the
+								ground truth simulator, the actual printed result is often quite different. The
+								optimiser has pushed the inputs outside the distribution the network was trained on,
+								into regions where the surrogate is confidently wrong.
+								[PLACEHOLDER: example showing NN prediction looks great but litho sim disagrees]
+								The solution is active learning. Instead of treating the training dataset as fixed, we
+								use the optimisation process itself to generate new training data. Snapshots of the mask
+								taken throughout each optimisation run are collected and simulated with the ground truth
+								simulator to get accurate labels. These new samples are added to the training set and
+								the surrogate is retrained, making it more accurate in exactly the regions the optimiser
+								cares about. This loop repeats, with each round of optimisation generating better
+								training data for the next.
+								<img class="inner" style="padding-top: 24px;"
+									src="images/OPC/active_learning.webp" />
+								Over 20 rounds, adding around 2500 new samples each time, the surrogate learns to
+								accurately predict the simulator output for optimised masks, and the gap between
+								surrogate prediction and ground truth closes significantly.
+							</p>
+						</div>
+					</div>
+
+					<div class="inner">
+						<div class="content">
+							<h2 class="major">Results</h2>
+							<p>
+								After active learning, the surrogate predictions and ground truth simulator results are
+								in much closer agreement. Here are some final optimisation results, showing the target
+								pattern, optimised mask, illumination field and the comparison between surrogate and
+								simulator predictions.
+
+								[PLACEHOLDER: final result grid, target, baseline, optimised mask, illumination, NN
+								resist, litho resist, error maps]
+
+								The optimised mask and illumination consistently outperform the conventional baseline,
+								producing resist profiles that much more closely match the target pattern. The error
+								maps show the remaining differences between surrogate and simulator are small and
+								largely concentrated at fine edges.
+
+								The optimisation video below shows the full process from initialisation to final result,
+								with the mask evolving from the target pattern toward an OPC-corrected solution.
+
+							<div class="video-container">
+								<iframe width="560" height="315"
+									src="https://www.youtube.com/embed/4LP_2X_Xdus?si=-yXbuYXhfRj-enRj&mute=1"
+									title="YouTube video player" frameborder="0"
+									allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+									allowfullscreen></iframe>
+							</div>
+							</p>
+						</div>
+					</div>
+				</section>
+
+
+			</section>
+	</section>
+	<!-- Footer -->
+	<section id="footer">
+		<div class="inner">
+			<h2 class="major">Contact information</h2>
+
+			<ul class="contact">
+				<li class="icon solid fa-home">Utrecht, The Netherlands</li>
+				<li class="icon solid fa-envelope">simen.vanherpt@gmail.com</li>
+				<li class="icon brands fa-linkedin">
+					<a href="https://www.linkedin.com/in/simen-van-herpt-829b70136/">Linkedin Profile</a>
+				</li>
+			</ul>
+			<ul class="copyright">
+				<li>&copy; Untitled Inc. All rights reserved.</li>
+				<li>Design: <a href="http://html5up.net">HTML5 UP</a></li>
+			</ul>
+		</div>
+	</section>
+	</div>
+	</div>
+
+	<!-- Scripts -->
+	<script src="assets/js/jquery.min.js"></script>
+	<script src="assets/js/jquery.scrollex.min.js"></script>
+	<script src="assets/js/browser.min.js"></script>
+	<script src="assets/js/breakpoints.min.js"></script>
+	<script src="assets/js/util.js"></script>
+	<script src="assets/js/main.js"></script>
+
+</body>
+
+</html>
