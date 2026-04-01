@@ -32,7 +32,6 @@
 			<section id="wrapper">
 				<header>
 					<div class="inner">
-						<h2>Work In Progress</h2>
 						<h2>Optical Proximity Correction (OPC)</h2>
 						<div class="video-container">
 							<iframe width="560" height="315"
@@ -58,11 +57,13 @@
 							you design is never quite what gets printed. Take a simple example, using a desired pattern
 							directly as the mask:
 							<img class="inner" style="padding-top: 24px;" src="images/OPC/example_sim.webp" />
-							Using Fourier optics, we can describe this behaviour precisely. Given a mask and
-							illumination source, the model can predict the resulting intensity pattern and final resist
+							Using Fourier optics, we can describe this behaviour precisely. Given an
+							illumination source and mask, the model can predict the resulting intensity pattern and
+							final resist
 							profile on the wafer. The challenge is going the other way: given a desired resist profile,
-							find the mask and illumination that produce it. For a model this complex, that inversion is
-							far from straightforward, and this project tackles it using a neural network and
+							find the illumination and mask that produce it. For a model this complex, that inversion is
+							far from straightforward, and this project tackles it using a surrogate UNet FiLM neural
+							network and
 							gradient-based optimisation.
 						</p>
 					</div>
@@ -87,7 +88,7 @@
 							<p>
 								The simulator is accurate but slow, and more importantly not differentiable, meaning we
 								can't use it directly to optimise the mask and illumination through gradient descent.
-								That's where the surrogate model comes in.
+								That's where the surrogate neural network comes in.
 							</p>
 						</div>
 					</div>
@@ -98,34 +99,55 @@
 							<p>
 								We can train a neural network to approximate the simulator by generating mask and
 								illumination pairs and using the Fourier optics model to compute the ground truth wafer
-								intensity and resist profile for each one.
-
-								The architecture is a UNet, a natural choice for image-to-image prediction tasks. It
-								processes the mask through a series of convolutional layers that capture local spatial
-								patterns, compressing it down to a compact representation and then expanding back up to
-								full resolution. Convolutional layers are well suited here since the mask is inherently
-								spatial, and what matters at each pixel depends strongly on its local neighbourhood.
-								Skip connections pass feature maps directly from the encoder to the corresponding
-								decoder layer, giving the network a shortcut to fine spatial detail that would otherwise
-								be lost during compression.
-
-								<img class="inner" style="padding-top: 24px;" src="images/OPC/model.webp" />
-								U
+								intensity and resist profile for each one. Convolutional layers are particularly well
+								suited for this task because the mask is inherently spatial, and the behaviour at each
+								pixel depends strongly on its local neighbourhood.
+							</p>
+							<p>
 								The illumination is handled differently. Unlike the mask, the illumination source is a
 								global property of the optical system, affecting how every part of the mask gets
 								resolved on the wafer equally. Feeding it in as just another input channel and
-								processing it with convolutions doesn't reflect that. Instead we use Feature-wise Linear
-								Modulation (FiLM): the illumination is encoded into a compact vector, which is used to
-								dynamically scale and shift the feature maps at each level of the network. It is similar
-								to a standard layer in a neural network, but rather than having fixed learned
-								parameters, the scale and shift values are predicted on the fly from the illumination
-								input, adapting the network's behaviour to each illumination pattern.
+								processing it with convolutions would not reflect this. Instead, we use Feature-wise
+								Linear Modulation (FiLM): the illumination is encoded into a compact vector, which is
+								then used to dynamically scale and shift the feature maps at each level of the network.
+								This is similar to a standard layer in a neural network, but rather than having fixed
+								learned parameters, the scale and shift values are determined dynamically from the
+								illumination input. This allows the network to adapt its feature extraction to different
+								illumination conditions without changing the spatial structure of the mask features.
+							</p>
+							<p>
+								The architecture used is a UNet, as shown below, a natural choice for image-to-image
+								prediction tasks.
+								The network consists of two main parts: an encoder and a decoder. The encoder processes
+								the input mask through a sequence of convolutional layers and downsampling operations.
+								At each stage it extracts increasingly abstract spatial features while reducing the
+								resolution of the representation, allowing the network to capture larger spatial context
+								and global structure in the mask pattern.
 
-								<img class="inner" style="padding-top: 24px;" src="images/OPC/nn_predict.webp" />
+							<img class="inner" style="padding-top: 24px;" src="images/OPC/unet.png" />
 
-								Once trained, gradients can flow through the surrogate, meaning we can use it to work
-								backwards from a desired resist profile to find the mask and illumination that produce
-								it.
+								At the centre of the network is a bottleneck representation that contains a compact
+								summary of the mask features. From this compressed representation, the decoder gradually
+								reconstructs a high-resolution output by applying upsampling layers followed by
+								convolutional blocks. At each stage the spatial resolution increases while the
+								representation becomes more detailed again.
+							</p>
+							<p>
+								Skip connections link each encoder layer to the corresponding decoder layer. These
+								connections pass high-resolution feature maps directly to later stages of the network,
+								providing a shortcut for fine spatial detail that would otherwise be lost during
+								downsampling. This helps the model preserve edge information and local structure in the
+								predicted wafer intensity and resist profile.
+								
+							</p>
+							<p>
+								Using this UNet-FiLM, the network predicts wafer intensity and resist profiles that
+								preserve mask details while adapting to illumination. An example output, which compares it to the ground truth simulation, is shown below.
+							<img class="inner" style="padding-top: 24px;" src="images/OPC/nn_predict.webp" />
+							Once trained, gradients can flow through the surrogate neural network, meaning we can
+							use it to work
+							backwards from a desired resist profile to find the mask and illumination that produce
+							it.
 							</p>
 						</div>
 					</div>
@@ -134,7 +156,8 @@
 						<div class="content">
 							<h2 class="major">Data Generation</h2>
 							<p>
-								To train the surrogate, we need a large and diverse dataset of mask, illumination and
+								To train the surrogate neural network, we need a large and diverse dataset of mask,
+								illumination and
 								simulated output pairs. We start with a set of 4000 base circuit patterns, but that
 								alone wouldn't give the network enough variety to generalise well. During optimisation,
 								the network will encounter mask and illumination combinations it has never seen before.
@@ -167,27 +190,26 @@
 						<div class="content">
 							<h2 class="major">Gradient-Based Optimisation</h2>
 							<p>
-								With a trained surrogate, we can now optimise the mask and illumination jointly. Because
-								the surrogate is differentiable, we can compute gradients of the resist prediction with
-								respect to both the mask and the illumination, and use those gradients to find
-								adjustments that bring the predicted output closer to the desired pattern.
+								With a trained surrogate neural network, we can now optimise the mask and illumination
+								jointly. Because the network is differentiable, we can compute gradients of the resist
+								prediction with respect to both inputs, and use those gradients to find adjustments that
+								bring the predicted output closer to the desired pattern.
 								The optimisation starts from the target pattern itself as the initial mask, with a
-								randomly sampled illumination. To avoid getting stuck in poor local minima, we apply a
-								Gaussian blur to the mask that anneals over iterations, starting coarse and gradually
-								sharpening. This lets the optimiser find the right global structure before committing to
-								fine details. A binary phase at the end pushes mask values toward 0 or 1, since real
-								masks are binary.
-								[PLACEHOLDER: final result grid showing target, optimised mask, illumination, NN
-								predicted resist]
-								The surrogate prediction matches the target closely, and the optimised mask and
-								illumination look physically meaningful. However, when we verify the result using the
-								ground truth simulator, a different picture emerges.
+								randomly sampled illumination. To avoid getting stuck in a local minima, we apply a
+								Gaussian blur to the mask that gradually decreases over iterations, starting coarse and
+								becoming sharper. This lets the optimiser find the right global structure before
+								committing to fine details. A binary phase at the end pushes mask values toward 0 or 1,
+								since the masks are binary.
+								The results of an example run are shown below: the target pattern, a baseline simulation
+								using the target directly as a mask, the optimised mask and illumination, and finally
+								the network prediction alongside the ground truth simulator output.
 								<img class="inner" style="padding-top: 24px;"
 									src="images/OPC/optimised_results_bad.webp" />
-								The actual printed result differs significantly from what the surrogate predicted. The
-								optimiser found a solution that looks good to the network, but that solution sits
-								outside the region the network was trained on, where its predictions can no longer be
-								trusted.
+								While the surrogate neural network (7th img) predicts a good result, the ground truth
+								simulator (8th img)
+								tells a different story. The optimiser found a solution that looks convincing to the
+								network, but sits outside the region it was trained on, where its predictions can no
+								longer be trusted. This is where active learning comes in.
 							</p>
 						</div>
 					</div>
@@ -196,24 +218,24 @@
 						<div class="content">
 							<h2 class="major">Active Learning</h2>
 							<p>
-								The optimiser is very good at finding masks and illuminations that fool the surrogate
-								into predicting a good result. But when we simulate those optimised inputs with the
-								ground truth simulator, the actual printed result is often quite different. The
-								optimiser has pushed the inputs outside the distribution the network was trained on,
-								into regions where the surrogate is confidently wrong.
-								[PLACEHOLDER: example showing NN prediction looks great but litho sim disagrees]
-								The solution is active learning. Instead of treating the training dataset as fixed, we
-								use the optimisation process itself to generate new training data. Snapshots of the mask
-								taken throughout each optimisation run are collected and simulated with the ground truth
-								simulator to get accurate labels. These new samples are added to the training set and
-								the surrogate is retrained, making it more accurate in exactly the regions the optimiser
-								cares about. This loop repeats, with each round of optimisation generating better
-								training data for the next.
-								<img class="inner" style="padding-top: 24px;"
-									src="images/OPC/active_learning.webp" />
-								Over 20 rounds, adding around 2500 new samples each time, the surrogate learns to
-								accurately predict the simulator output for optimised masks, and the gap between
-								surrogate prediction and ground truth closes significantly.
+
+								While the optimiser might return a solution with a low loss according to the surrogate,
+								this does not guarantee the result is physically accurate. When simulated with the
+								ground truth simulator, the printed result can look quite different, as the optimiser
+								has pushed the inputs into regions where the surrogate's predictions become unreliable.
+							</p>
+							<p>
+								To tackle this, active learning is used. Instead of treating the training dataset as
+								fixed, we use the optimisation process itself to generate extra training data. Snapshots
+								of the mask taken throughout each optimisation run are collected and simulated with the
+								ground truth simulator to get accurate labels. These new samples are added to the
+								training set and training continues, gradually improving the surrogate in exactly the
+								regions the optimiser cares about. Each round of optimisation generates better training
+								data for the next.
+								<img class="inner" style="padding-top: 24px;" src="images/OPC/active_learning.png" />
+								Over 20 rounds, adding around 2500 new samples each time, the surrogate becomes more
+								reliable in the regions that matter for optimisation.
+
 							</p>
 						</div>
 					</div>
@@ -222,21 +244,18 @@
 						<div class="content">
 							<h2 class="major">Results</h2>
 							<p>
-								After active learning, the surrogate predictions and ground truth simulator results are
-								in much closer agreement. Here are some final optimisation results, showing the target
-								pattern, optimised mask, illumination field and the comparison between surrogate and
-								simulator predictions.
+								After active learning, the surrogate predictions and ground truth simulator results look
+								a lot better. The video below shows the full optimisation process, from the initial
+								target pattern through to the final OPC-corrected solution.
+							</p>
+							<p>
+								The top row shows the desired pattern, the baseline printed result using the target
+								directly as a mask with standard illumination, and the optimised mask and illumination
+								field evolving over iterations. The bottom row shows the corresponding wafer intensity
+								and resist profile, comparing the surrogate prediction against the ground truth Fourier
+								model at each step. Remember that the goal is to get the bottom right as close to the
+								top left as possible by controlling the third and fourth images.
 
-								[PLACEHOLDER: final result grid, target, baseline, optimised mask, illumination, NN
-								resist, litho resist, error maps]
-
-								The optimised mask and illumination consistently outperform the conventional baseline,
-								producing resist profiles that much more closely match the target pattern. The error
-								maps show the remaining differences between surrogate and simulator are small and
-								largely concentrated at fine edges.
-
-								The optimisation video below shows the full process from initialisation to final result,
-								with the mask evolving from the target pattern toward an OPC-corrected solution.
 
 							<div class="video-container">
 								<iframe width="560" height="315"
